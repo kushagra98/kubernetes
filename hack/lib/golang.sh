@@ -18,7 +18,8 @@
 
 # The golang package that we are building.
 readonly KUBE_GO_PACKAGE=k8s.io/kubernetes
-readonly KUBE_GOPATH="${KUBE_OUTPUT}/go"
+readonly KUBE_GOPATH="${KUBE_GOPATH:-"${KUBE_OUTPUT}/go"}"
+export KUBE_GOPATH
 
 # The server platform we are building on.
 readonly KUBE_SUPPORTED_SERVER_PLATFORMS=(
@@ -567,6 +568,7 @@ kube::golang::setup_env() {
   fi
 
   GOMAXPROCS=${GOMAXPROCS:-$(ncpu)}
+  export GOMAXPROCS
   kube::log::status "Setting GOMAXPROCS: ${GOMAXPROCS}"
 }
 

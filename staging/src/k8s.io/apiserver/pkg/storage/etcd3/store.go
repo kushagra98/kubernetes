@@ -85,6 +85,12 @@ type store struct {
 	leaseManager        *leaseManager
 }
 
+func (s *store) RequestWatchProgress(ctx context.Context) error {
+	// Use watchContext to match ctx metadata provided when creating the watch.
+	// In best case scenario we would use the same context that watch was created, but there is no way access it from watchCache.
+	return s.client.RequestProgress(s.watchContext(ctx))
+}
+
 type objState struct {
 	obj   runtime.Object
 	meta  *storage.ResponseMeta
@@ -865,8 +871,12 @@ func growSlice(v reflect.Value, maxCapacity int, sizes ...int) {
 }
 
 // Watch implements storage.Interface.Watch.
+// TODO(#115478): In order to graduate the WatchList feature to beta, the etcd3 implementation must/should also support it.
 func (s *store) Watch(ctx context.Context, key string, opts storage.ListOptions) (watch.Interface, error) {
-	if opts.SendInitialEvents != nil {
+	// it is safe to skip SendInitialEvents if the request is backward compatible
+	// see https://github.com/kubernetes/kubernetes/blob/267eb25e60955fe8e438c6311412e7cf7d028acb/staging/src/k8s.io/apiserver/pkg/storage/etcd3/watcher.go#L260
+	compatibility := opts.Predicate.AllowWatchBookmarks == false && (opts.ResourceVersion == "" || opts.ResourceVersion == "0")
+	if opts.SendInitialEvents != nil && !compatibility {
 		return nil, apierrors.NewInvalid(
 			schema.GroupKind{Group: s.groupResource.Group, Kind: s.groupResource.Resource},
 			"",
@@ -881,7 +891,18 @@ func (s *store) Watch(ctx context.Context, key string, opts storage.ListOptions)
 	if err != nil {
 		return nil, err
 	}
-	return s.watcher.Watch(ctx, preparedKey, int64(rev), opts.Recursive, opts.ProgressNotify, s.transformer, opts.Predicate)
+	return s.watcher.Watch(s.watchContext(ctx), preparedKey, int64(rev), opts.Recursive, opts.ProgressNotify, s.transformer, opts.Predicate)
+}
+
+func (s *store) watchContext(ctx context.Context) context.Context {
+	// The etcd server waits until it cannot find a leader for 3 election
+	// timeouts to cancel existing streams. 3 is currently a hard coded
+	// constant. The election timeout defaults to 1000ms. If the cluster is
+	// healthy, when the leader is stopped, the leadership transfer should be
+	// smooth. (leader transfers its leadership before stopping). If leader is
+	// hard killed, other servers will take an election timeout to realize
+	// leader lost and start campaign.
+	return clientv3.WithRequireLeader(ctx)
 }
 
 func (s *store) getState(ctx context.Context, getResp *clientv3.GetResponse, key string, v reflect.Value, ignoreNotFound bool) (*objState, error) {
